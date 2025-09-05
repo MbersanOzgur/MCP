@@ -162,6 +162,21 @@ DECIDER_ARGS = {
     "additionalProperties": False
 }
 
+# NEW: shared args for cheapest/highest tools (marketplaces optional)
+BEST_ARGS = {
+    "type": "object",
+    "properties": {
+        "marketplaces": {
+            "type": "array",
+            "items": {"type": "string", "enum": ["amazon", "trendyol", "hepsiburada"]},
+            "description": "If omitted, search across all marketplaces."
+        },
+        "query": {"type": "string", "description": "Substring to match in item_name (case-insensitive)."},
+        "item_type": {"type": "string", "description": "Filter by category, e.g., toothbrush, toothpaste."}
+    },
+    "additionalProperties": False
+}
+
 ToolResult = Dict[str, Any]
 
 def _filter_rows(
@@ -238,6 +253,56 @@ def list_item_types(_: Dict[str, Any]) -> ToolResult:
     types = sorted({r["item_type"] for r in STORE.all()})
     return {"item_types": types}
 
+# NEW: get_cheapest_product
+def get_cheapest_product(params: Dict[str, Any]) -> ToolResult:
+    rows = STORE.all()
+    mks: Optional[List[str]] = params.get("marketplaces")
+    query = params.get("query")
+    item_type = params.get("item_type")
+
+    # Apply optional marketplace filters (union of marketplaces)
+    candidates: List[ProductRow] = []
+    if mks and isinstance(mks, list) and len(mks) > 0:
+        for mk in mks:
+            candidates.extend(_filter_rows(rows, mk, query, item_type, limit=10_000))
+    else:
+        # all marketplaces
+        candidates = _filter_rows(rows, None, query, item_type, limit=10_000)
+
+    if not candidates:
+        return {"product": None}
+
+    # cheapest (tie-break by higher rating)
+    cheapest = min(
+        candidates,
+        key=lambda r: (r.get("item_price", float("inf")), -float(r.get("item_rate", 0.0))),
+    )
+    return {"product": cheapest}
+
+# NEW: get_highest_rated_product
+def get_highest_rated_product(params: Dict[str, Any]) -> ToolResult:
+    rows = STORE.all()
+    mks: Optional[List[str]] = params.get("marketplaces")
+    query = params.get("query")
+    item_type = params.get("item_type")
+
+    candidates: List[ProductRow] = []
+    if mks and isinstance(mks, list) and len(mks) > 0:
+        for mk in mks:
+            candidates.extend(_filter_rows(rows, mk, query, item_type, limit=10_000))
+    else:
+        candidates = _filter_rows(rows, None, query, item_type, limit=10_000)
+
+    if not candidates:
+        return {"product": None}
+
+    # highest rating (tie-break by lower price)
+    highest = max(
+        candidates,
+        key=lambda r: (float(r.get("item_rate", 0.0)), -r.get("item_price", float("inf"))),
+    )
+    return {"product": highest}
+
 ToolEntry = Dict[str, Any]
 
 TOOLS: Dict[str, Dict[str, Any]] = {
@@ -270,6 +335,19 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "description": "List all distinct item_type values present in the catalog.",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
         "handler": list_item_types,
+    },
+    # NEW TOOLS
+    "get_cheapest_product": {
+        "name": "get_cheapest_product",
+        "description": "Return the single cheapest product after optional filtering (marketplaces/query/item_type).",
+        "input_schema": BEST_ARGS,
+        "handler": get_cheapest_product,
+    },
+    "get_highest_rated_product": {
+        "name": "get_highest_rated_product",
+        "description": "Return the single highest-rated product after optional filtering (marketplaces/query/item_type).",
+        "input_schema": BEST_ARGS,
+        "handler": get_highest_rated_product,
     },
 }
 
